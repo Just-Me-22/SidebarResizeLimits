@@ -18,22 +18,6 @@ sidebar in to a narrow strip or out to something much wider.
 Both are in pixels. Discord reads the range once, when the sidebar mounts, so a
 changed setting takes effect on the next reload rather than immediately.
 
-## Does it need a theme?
-
-No, and it does not need any extra CSS on stock Discord.
-
-Discord drives the whole column from a single CSS variable,
-`--custom-guild-sidebar-width`, which the drag handler writes to `document.body`.
-The sidebar, the channel list and every channel and DM row all size off it, so
-widening the clamp is enough on its own and everything else follows.
-
-Themes that move the server column can be a different matter. Discord sizes the
-channel list as
-`calc(var(--custom-guild-sidebar-width) - var(--custom-guild-list-width))`,
-assuming that column sits beside it. A theme that puts the column somewhere else
-leaves the subtraction behind as a dead gap, and the gap grows as you drag wider.
-That is the theme's to fix, not the plugin's.
-
 ## Requirements
 
 Equicord installed **from source**. Userplugins are compiled into the bundle, so
