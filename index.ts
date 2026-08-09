@@ -45,17 +45,11 @@ export default definePlugin({
             }
         },
         {
-            find: /CHANNEL_SIDEBAR_RESIZED.{0,200}?minDimension:\d+,maxDimension:\d+/,
-            replacement: [
-                {
-                    match: /(\i)<=264\?/,
-                    replace: "$1<=$self.min?"
-                },
-                {
-                    match: /(\i)>=432\?/,
-                    replace: "$1>=$self.max?"
-                }
-            ]
+            find: /CHANNEL_SIDEBAR_RESIZED.{0,800}?Math\.min\(Math\.max\(/,
+            replacement: {
+                match: /Math\.min\(Math\.max\((\i),\d+\),\d+\)/,
+                replace: "Math.min(Math.max($1,$self.min),$self.max)"
+            }
         }
     ],
 

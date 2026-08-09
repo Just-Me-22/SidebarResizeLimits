@@ -57,10 +57,46 @@ dimension pair that follows makes it unique, and `\d+` in place of the literals
 keeps it matching if Discord changes its own defaults.
 
 The overdrag styling, which decides when the sidebar looks like it has hit the
-limit, compares against 264 and 432 from a separate pair of literals. Left alone
-it would look maxed out at 432 of a 900 range. That fix is deliberately its own
-patch entry, so if Discord changes those numbers it fails on its own and
-resizing itself keeps working.
+limit, clamps against the same two numbers in a separate expression:
+
+```js
+let n=Math.min(Math.max(t,264),432)
+```
+
+Left alone it would look maxed out at 432 of a 900 range. That fix is
+deliberately its own patch entry, so if Discord changes the shape it fails on its
+own and resizing itself keeps working. It used to read `t<=264?` / `t>=432?`;
+Discord rewrote it into the `Math.min`/`Math.max` form, which broke the old
+match and is exactly the failure this split is meant to contain.
+
+## Known limitation on current Canary
+
+As of Canary `1.0.1099`, patching the JavaScript is **no longer sufficient on its
+own**. Discord also caps the width in CSS, in two places:
+
+- the `base__` grid gives the sidebar's track a fixed ~432px
+- `sidebarList__` carries `width: 432px; max-width: 432px`
+
+The drag handle and the plugin will happily report a wider value, and the layout
+will refuse to render it. This plugin still ships no CSS by design, so if you are
+on that build you will want these two rules in QuickCSS:
+
+```css
+[class*="base__"] {
+    grid-template-columns:
+        [start] var(--custom-guild-list-width)
+        [guildsEnd] calc(var(--custom-guild-sidebar-width) - var(--custom-guild-list-width))
+        [channelsEnd] 1fr [end] !important;
+}
+
+[class*="sidebarList__"][class][class] {
+    width: calc(var(--custom-guild-sidebar-width) - var(--custom-guild-list-width)) !important;
+    max-width: none !important;
+}
+```
+
+Both follow the variable the drag handle writes, so resizing keeps working. The
+doubled `[class]` is needed to outrank Discord's own two-class rule.
 
 ## License
 
