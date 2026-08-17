@@ -14,9 +14,14 @@ sidebar in to a narrow strip or out to something much wider.
 |---|---|---|
 | Minimum width | 150 | 264 |
 | Maximum width | 900 | 432 |
+| Width | 0 | - |
 
-Both are in pixels. Discord reads the range once, when the sidebar mounts, so a
-changed setting takes effect on the next reload rather than immediately.
+All three are in pixels. Width is written by dragging the handle and is what gets
+restored on the next start; leave it at 0 to let Discord manage the width itself.
+
+On builds where the patches still apply, Discord reads the range once when the
+sidebar mounts, so a changed minimum or maximum takes effect on the next reload
+rather than immediately.
 
 ## Requirements
 
@@ -69,34 +74,40 @@ own and resizing itself keeps working. It used to read `t<=264?` / `t>=432?`;
 Discord rewrote it into the `Math.min`/`Math.max` form, which broke the old
 match and is exactly the failure this split is meant to contain.
 
-## Known limitation on current Canary
+## Canary: the patches cannot land
 
-As of Canary `1.0.1099`, patching the JavaScript is **no longer sufficient on its
-own**. Discord also caps the width in CSS, in two places:
+On current Canary the patches above are never applied, and no regex will fix
+that. The module holding the resize code is bundled into a single ~1MB factory
+that Discord requires before Vencord's webpack hook is installed, so the patcher
+never sees it. Confirmed by reading the factory's own symbols: it carries neither
+`WebpackPatcher.patchedBy` nor `WebpackPatcher.patchedSource`, while its source
+still contains the untouched `minDimension:264,maxDimension:432`.
 
-- the `base__` grid gives the sidebar's track a fixed ~432px
-- `sidebarList__` carries `width: 432px; max-width: 432px`
+So on Canary the plugin takes the drag gesture over instead. It intercepts
+`pointerdown` on the handle, cancels Discord's own handler, and writes the width
+into the grid track between `[sidebarEnd]` and `[channelsEnd]` on whichever
+ancestor actually defines the columns. If that grid is not found the plugin does
+nothing and leaves Discord's drag alone, which is what keeps the patched path
+working on stable.
 
-The drag handle and the plugin will happily report a wider value, and the layout
-will refuse to render it. This plugin still ships no CSS by design, so if you are
-on that build you will want these two rules in QuickCSS:
+Discord repeats the same 432 limit in three further places, each of which
+silently caps the one above it, so releasing the track alone is not enough:
+
+- the grid track itself
+- `sidebarList_`, via `min-width` / `max-width` / `flex-basis`
+- every row `li`, via `max-width`
+
+Because of that this plugin **now ships a small stylesheet**, which earlier
+versions deliberately did not. It is two rules, injected only while the plugin is
+running and removed on stop:
 
 ```css
-[class*="base__"] {
-    grid-template-columns:
-        [start] var(--custom-guild-list-width)
-        [guildsEnd] calc(var(--custom-guild-sidebar-width) - var(--custom-guild-list-width))
-        [channelsEnd] 1fr [end] !important;
-}
-
-[class*="sidebarList__"][class][class] {
-    width: calc(var(--custom-guild-sidebar-width) - var(--custom-guild-list-width)) !important;
-    max-width: none !important;
-}
+[class*="sidebarList"]{min-width:0;max-width:none;width:auto;flex:1 1 auto;}
+[class*="sidebarList"] li{max-width:none;}
 ```
 
-Both follow the variable the drag handle writes, so resizing keeps working. The
-doubled `[class]` is needed to outrank Discord's own two-class rule.
+`privateChannels_` and `sidebar_ > container_` are *not* constrained and need no
+rule; they already stretch on their own.
 
 ## License
 
