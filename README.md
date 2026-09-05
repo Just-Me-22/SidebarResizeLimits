@@ -19,9 +19,17 @@ sidebar in to a narrow strip or out to something much wider.
 All three are in pixels. Width is written by dragging the handle and is what gets
 restored on the next start; leave it at 0 to let Discord manage the width itself.
 
-On builds where the patches still apply, Discord reads the range once when the
-sidebar mounts, so a changed minimum or maximum takes effect on the next reload
-rather than immediately.
+The minimum and maximum are read at the moment you drag, so changing either one
+takes effect straight away.
+
+## Holding the width
+
+Discord re-lays the sidebar out for reasons unrelated to the drag - clicking into the
+message box is one - and that puts the width back to its own default. The drag result
+is still stored, so the plugin watches the sidebar and re-applies your width the moment
+it drifts. It uses a ResizeObserver rather than a timer: a poll corrects it too, but not
+before the wrong width has been on screen for a tick, which reads as the sidebar jumping
+about. Leaving Width at 0 disables the watch along with everything else.
 
 ## Requirements
 
@@ -41,54 +49,33 @@ pnpm build
 ```
 
 Restart or reload Discord (Ctrl+R), then enable **SidebarResizeLimits** in
-Equicord's plugin settings and reload once more. Patches are applied at startup,
-so enabling alone does nothing until the next reload.
+Equicord's plugin settings.
 
 ## How it works
 
-The range is a pair of literals passed to Discord's resize hook:
+The plugin takes the drag gesture over rather than patching Discord's own.
 
-```js
-{minDimension:264,maxDimension:432,resizableDomNodeRef:d,onElementResize:c,...}
-```
+The obvious approach is a webpack patch on the range Discord passes to its resize
+hook, `{minDimension:264,maxDimension:432,...}`. That works on stable and does
+not work on Canary, where the module holding the resize code is bundled into a
+single ~1MB factory that Discord requires before Vencord's webpack hook is
+installed, so the patcher never sees it. Confirmed by reading the factory's own
+symbols: it carries neither `WebpackPatcher.patchedBy` nor
+`WebpackPatcher.patchedSource`, while its source still contains the untouched
+`minDimension:264,maxDimension:432`. Those patches were shipped for a while and
+have been removed, because the gesture takeover cancels Discord's handler outright
+and the patched values were never read on either build.
 
-The plugin rewrites those two values to read from its settings, through getters
-so that changing a setting needs only a reload and not a rebuild.
+The takeover intercepts `pointerdown` on the handle, cancels Discord's own
+handler, and writes the width in two places: the CSS variable
+`--vc-sidebar-width` on `<html>`, and the grid track between `[sidebarEnd]` and
+`[channelsEnd]` on whichever ancestor actually defines the columns. The track
+write is skipped when no such grid is found.
 
-The `find` is a regular expression rather than the obvious
-`"CHANNEL_SIDEBAR_RESIZED"` string, because that string appears in two modules
-and the second one would report a patch that had no effect. Anchoring on the
-dimension pair that follows makes it unique, and `\d+` in place of the literals
-keeps it matching if Discord changes its own defaults.
-
-The overdrag styling, which decides when the sidebar looks like it has hit the
-limit, clamps against the same two numbers in a separate expression:
-
-```js
-let n=Math.min(Math.max(t,264),432)
-```
-
-Left alone it would look maxed out at 432 of a 900 range. That fix is
-deliberately its own patch entry, so if Discord changes the shape it fails on its
-own and resizing itself keeps working. It used to read `t<=264?` / `t>=432?`;
-Discord rewrote it into the `Math.min`/`Math.max` form, which broke the old
-match and is exactly the failure this split is meant to contain.
-
-## Canary: the patches cannot land
-
-On current Canary the patches above are never applied, and no regex will fix
-that. The module holding the resize code is bundled into a single ~1MB factory
-that Discord requires before Vencord's webpack hook is installed, so the patcher
-never sees it. Confirmed by reading the factory's own symbols: it carries neither
-`WebpackPatcher.patchedBy` nor `WebpackPatcher.patchedSource`, while its source
-still contains the untouched `minDimension:264,maxDimension:432`.
-
-So on Canary the plugin takes the drag gesture over instead. It intercepts
-`pointerdown` on the handle, cancels Discord's own handler, and writes the width
-into the grid track between `[sidebarEnd]` and `[channelsEnd]` on whichever
-ancestor actually defines the columns. If that grid is not found the plugin does
-nothing and leaves Discord's drag alone, which is what keeps the patched path
-working on stable.
+The pointer position is turned into a width by subtracting the channel list's own
+`getBoundingClientRect().left`, measured once when the drag starts. An earlier
+version added up the pixel values in the grid template ahead of `[sidebarEnd]`
+instead; that only worked while the grid was the thing doing the placing.
 
 Discord repeats the same 432 limit in three further places, each of which
 silently caps the one above it, so releasing the track alone is not enough:
@@ -98,16 +85,41 @@ silently caps the one above it, so releasing the track alone is not enough:
 - every row `li`, via `max-width`
 
 Because of that this plugin **now ships a small stylesheet**, which earlier
-versions deliberately did not. It is two rules, injected only while the plugin is
-running and removed on stop:
+versions deliberately did not. It is three rules, injected only while the plugin
+is running and removed on stop:
 
 ```css
-[class*="sidebarList"]{min-width:0;max-width:none;width:auto;flex:1 1 auto;}
+[class*="sidebarList"]{min-width:0;max-width:none;
+  width:var(--vc-sidebar-width,auto);flex:0 0 var(--vc-sidebar-width,auto);}
 [class*="sidebarList"] li{max-width:none;}
+[class*="sidebarList"] [class*="banner" i]{width:100%;}
 ```
+
+The third one is for the guild banner, which keeps whatever width Discord laid it
+out at and otherwise stops short of a widened sidebar.
 
 `privateChannels_` and `sidebar_ > container_` are *not* constrained and need no
 rule; they already stretch on their own.
+
+## For theme authors
+
+The current width is always readable as `--vc-sidebar-width` on the root element,
+and is set on start as well as during a drag, so it is there before the user
+touches the handle.
+
+If your theme lays the sidebar out itself, size the channel list from that
+variable rather than from a literal:
+
+```css
+[class*="sidebar__"] > [class*="sidebarList__"] {
+  flex: 0 0 var(--vc-sidebar-width, 360px) !important;
+}
+```
+
+Without it the drag has no visible effect. A theme rule only needs one more class
+in the selector than the plugin's own `[class*="sidebarList"]` to win the cascade,
+`!important` on both sides included, and it will then hold the list at its literal
+width no matter what the handle does.
 
 ## License
 
