@@ -9,6 +9,8 @@ import definePlugin, { OptionType } from "@utils/types";
 
 const HANDLE = '[class*="sidebarResizeHandle"]';
 const SIDEBAR = '[class*="sidebar_"]';
+const LIST = '[class*="sidebarList"]';
+const WIDTH_VAR = "--vc-sidebar-width";
 
 const settings = definePluginSettings({
     minWidth: {
@@ -60,10 +62,16 @@ function findGrid(): HTMLElement | null {
     return null;
 }
 
-/** width of everything left of the channel list, so a pointer x can become a track width */
-function railsWidth(cols: string): number {
-    const head = cols.slice(0, cols.indexOf("[sidebarEnd]"));
-    return (head.match(/[\d.]+px/g) ?? []).reduce((a, b) => a + parseFloat(b), 0);
+/** left edge of the channel list, so a pointer x becomes a width whether the list is
+ *  sized by a grid track or by a flex basis a theme put on it */
+function listLeft(): number {
+    const list = document.querySelector(LIST);
+    return list ? list.getBoundingClientRect().left : 0;
+}
+
+/** the width every consumer reads, including themes that lay the sidebar out themselves */
+function publishWidth(px: number) {
+    document.documentElement.style.setProperty(WIDTH_VAR, `${Math.round(px)}px`);
 }
 
 function applyTrack(grid: HTMLElement, px: number) {
@@ -82,22 +90,72 @@ const STRETCH_ID = "sidebar-resize-limits-stretch";
 
 /**
  * Widening the track alone leaves dead space. sidebarList_ carries discord's 264/432
- * clamp as plain css (min-width/max-width/flex-basis), so it has to be released too.
+ * clamp as plain css (min-width/max-width/flex-basis), so it has to be released too,
+ * and sized from the variable so the list follows the drag under a flex parent.
  */
 function ensureStretch() {
     if (document.getElementById(STRETCH_ID)) return;
     const el = document.createElement("style");
     el.id = STRETCH_ID;
     el.textContent =
-        '[class*="sidebarList"]{min-width:0!important;max-width:none!important;' +
-        "width:auto!important;flex:1 1 auto!important;}" +
+        `${LIST}{min-width:0!important;max-width:none!important;` +
+        `width:var(${WIDTH_VAR},auto)!important;flex:0 0 var(${WIDTH_VAR},auto)!important;}` +
         // each row caps itself at discord's old maximum as well
-        '[class*="sidebarList"] li{max-width:none!important;}';
+        `${LIST} li{max-width:none!important;}` +
+        // the banner keeps the width discord laid it out at, so it stops short of a widened sidebar
+        `${LIST} [class*="banner" i]{width:100%!important;}`;
     document.documentElement.appendChild(el);
 }
 
 function clearStretch() {
     document.getElementById(STRETCH_ID)?.remove();
+}
+
+let keepAlive: number | undefined;
+let guard: ResizeObserver | undefined;
+let watched: HTMLElement | undefined;
+
+/**
+ * Discord re-lays the sidebar out for reasons that have nothing to do with the drag -
+ * clicking into the message box is one of them - and that puts the width back to its
+ * own default. The drag result is still in settings, so it is enough to notice and
+ * re-apply. A poll is too slow: the snap back is visible for however long the tick
+ * takes, which reads as the sidebar jumping about. A ResizeObserver corrects it inside
+ * the same frame, so nothing is seen.
+ */
+function reapply() {
+    const want = settings.store.width;
+    if (!want) return;
+    const list = document.querySelector(LIST) as HTMLElement | null;
+    if (!list) return;
+    if (Math.abs(list.getBoundingClientRect().width - want) < 2) return;
+    publishWidth(want);
+    ensureStretch();
+    const grid = findGrid();
+    if (grid) applyTrack(grid, want);
+}
+
+/** react swaps the list node out, so the observer has to follow it */
+function watchList() {
+    const list = document.querySelector(LIST) as HTMLElement | null;
+    if (!list || list === watched) return;
+    guard?.disconnect();
+    guard = new ResizeObserver(reapply);
+    guard.observe(list);
+    watched = list;
+}
+
+function startKeepAlive() {
+    watchList();
+    keepAlive = window.setInterval(watchList, 2000);
+}
+
+function stopKeepAlive() {
+    window.clearInterval(keepAlive);
+    keepAlive = undefined;
+    guard?.disconnect();
+    guard = undefined;
+    watched = undefined;
 }
 
 export default definePlugin({
@@ -106,44 +164,21 @@ export default definePlugin({
     authors: [{ name: "heart_menace", id: 281162701303185408n }],
     settings,
 
-    // stable still lets these land; canary bundles the module too early to patch, which is what
-    // the grid takeover below is for. findGrid() returning null leaves discord's drag alone.
-    patches: [
-        {
-            find: /CHANNEL_SIDEBAR_RESIZED.{0,200}?minDimension:\d+,maxDimension:\d+/,
-            replacement: {
-                match: /minDimension:\d+,maxDimension:\d+/,
-                replace: "minDimension:$self.min,maxDimension:$self.max"
-            }
-        },
-        {
-            find: /CHANNEL_SIDEBAR_RESIZED.{0,800}?Math\.min\(Math\.max\(/,
-            replacement: {
-                match: /Math\.min\(Math\.max\((\i),\d+\),\d+\)/,
-                replace: "Math.min(Math.max($1,$self.min),$self.max)"
-            }
-        }
-    ],
-
-    get min() {
-        return settings.store.minWidth;
-    },
-
-    get max() {
-        return settings.store.maxWidth;
-    },
-
     start() {
         const saved = settings.store.width;
         if (Number.isFinite(saved) && saved > 0) {
+            publishWidth(saved);
+            ensureStretch();
             // the sidebar may not be mounted yet on a cold start
             let tries = 0;
             const reapply = setInterval(() => {
                 const grid = findGrid();
-                if (grid) { ensureStretch(); applyTrack(grid, saved); clearInterval(reapply); }
+                if (grid) { applyTrack(grid, saved); clearInterval(reapply); }
                 if (++tries > 40) clearInterval(reapply);
             }, 250);
         }
+
+        startKeepAlive();
 
         onPointerDown = (e: PointerEvent) => {
             if (e.button !== 0) return;
@@ -154,21 +189,22 @@ export default definePlugin({
             const handle = target.closest(HANDLE) as HTMLElement | null;
             if (!handle) return;
 
-            const grid = findGrid();
-            if (!grid) return;
+            const left = listLeft();
+            if (!left) return;
 
             // discord clamps its own drag to 264..432, so take the gesture over entirely
             e.preventDefault();
             e.stopImmediatePropagation();
 
             ensureStretch();
-            const rails = railsWidth(getComputedStyle(grid).gridTemplateColumns);
+            const grid = findGrid();
             let latest = settings.store.width || 0;
 
             const move = (ev: PointerEvent) => {
                 const { minWidth, maxWidth } = settings.store;
-                latest = Math.min(Math.max(ev.clientX - rails, minWidth), maxWidth);
-                applyTrack(grid, latest);
+                latest = Math.min(Math.max(ev.clientX - left, minWidth), maxWidth);
+                publishWidth(latest);
+                if (grid) applyTrack(grid, latest);
             };
 
             const up = () => {
@@ -185,9 +221,11 @@ export default definePlugin({
     },
 
     stop() {
+        stopKeepAlive();
         if (onPointerDown) document.removeEventListener("pointerdown", onPointerDown, true);
         onPointerDown = null;
         clearTrack(findGrid());
         clearStretch();
+        document.documentElement.style.removeProperty(WIDTH_VAR);
     }
 });
