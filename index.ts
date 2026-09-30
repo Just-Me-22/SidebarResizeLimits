@@ -45,6 +45,7 @@ const settings = definePluginSettings({
 });
 
 let onPointerDown: ((e: PointerEvent) => void) | null = null;
+let cachedGrid: HTMLElement | null = null;
 
 /**
  * The sidebar is a grid item spanning named tracks, so its own width is ignored -
@@ -52,6 +53,12 @@ let onPointerDown: ((e: PointerEvent) => void) | null = null;
  * ancestor that actually defines the columns (the ones below it are subgrid).
  */
 function findGrid(): HTMLElement | null {
+    if (cachedGrid?.isConnected) return cachedGrid;
+    cachedGrid = locateGrid();
+    return cachedGrid;
+}
+
+function locateGrid(): HTMLElement | null {
     const bar = document.querySelector(HANDLE)?.closest(SIDEBAR) as HTMLElement | null;
     for (let n = bar?.parentElement; n && n !== document.body; n = n.parentElement) {
         const cs = getComputedStyle(n);
@@ -69,9 +76,18 @@ function listLeft(): number {
     return list ? list.getBoundingClientRect().left : 0;
 }
 
+const WIDTH_ID = "sidebar-resize-limits-width";
+
 /** the width every consumer reads, including themes that lay the sidebar out themselves */
 function publishWidth(px: number) {
-    document.documentElement.style.setProperty(WIDTH_VAR, `${Math.round(px)}px`);
+    const text = `:root{${WIDTH_VAR}:${Math.round(px)}px}`;
+    let el = document.getElementById(WIDTH_ID);
+    if (!el) {
+        el = document.createElement("style");
+        el.id = WIDTH_ID;
+        document.documentElement.appendChild(el);
+    }
+    if (el.textContent !== text) el.textContent = text;
 }
 
 function applyTrack(grid: HTMLElement, px: number) {
@@ -226,6 +242,7 @@ export default definePlugin({
         onPointerDown = null;
         clearTrack(findGrid());
         clearStretch();
-        document.documentElement.style.removeProperty(WIDTH_VAR);
+        document.getElementById(WIDTH_ID)?.remove();
+        cachedGrid = null;
     }
 });
